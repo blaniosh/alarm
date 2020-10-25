@@ -1,0 +1,348 @@
+/*********
+Alarm interface for two inputs: alarm status(set/unset), alarm bell triggered and one input: key switch used to set/unset the panel. Alarm panel data sent-to and received-from website server and output to an email address.
+Brett Laniosh - https://catshill.com
+Acknowledgements - 
+                   Rui Santos https://randomnerdtutorials.com/esp32-esp8266-input-data-html-form/ the HTML input data
+                   Ayush Sharma  https://github.com/ayushsharma82/AsyncElegantOTA for the slick and streamlined Async Elegant OTA updater
+                   Surviving with Android https://www.survivingwithandroid.com/send-email-using-esp32-smtp-server/ for the send mail with SMTP email server
+                   ESP32-Mail-Client https://github.com/mobizt/ESP32-Mail-Client
+                   ESPAsyncWebServer https://github.com/me-no-dev/ESPAsyncWebServer
+                   AsyncTCP https://github.com/me-no-dev/AsyncTCP                  
+*********/
+
+#include <WiFi.h>
+#include <AsyncTCP.h>
+#include <ESPAsyncWebServer.h>
+#include <AsyncElegantOTA.h>
+#include <ESP32_MailClient.h>
+
+
+// Enter local details
+// **************************************************************
+// Alarm passcode
+const char* passcode = "";                    // Code needed to set/unset alarm via Webpage
+
+// Network credentials
+const char* ssid = "";     // Wifi SSID
+const char* password = ""; // Wifi password
+
+//Static IP address
+IPAddress staticIP(192, 168, 1, 240);             // Set ESP32 Static IP address
+IPAddress gateway(192, 168, 1, 254);              // Set Gateway IP address
+IPAddress subnet(255, 255, 255, 0);               // Set Subnet IP address
+IPAddress dns(192, 168, 1, 254);                  // Set dns IP address
+
+// Email credentials
+#define GMAIL_SMTP_SEVER "smtp.gmail.com"         // email server
+#define GMAIL_SMTP_USERNAME "user@gmail.com" // email sender account
+#define GMAIL_SMTP_PASSWORD ""         // email account password 
+#define GMAIL_SMTP_PORT 465                       // email account port
+#define GMAIL_SMTP_TO "user@gmail.com"       // email recipient
+// **************************************************************
+
+// EMail Data
+// **************************************************************
+SMTPData data;
+String sendEmail(char *subject, char *sender, char *body, char *recipient, boolean htmlFormat) {
+  data.setLogin(GMAIL_SMTP_SEVER, GMAIL_SMTP_PORT, GMAIL_SMTP_USERNAME, GMAIL_SMTP_PASSWORD);
+  data.setSender(sender, GMAIL_SMTP_USERNAME);
+  data.setSubject(subject);
+  data.setMessage(body, htmlFormat);
+  data.addRecipient(recipient);
+  if (!MailClient.sendMail(data)) 
+  return MailClient.smtpErrorReason();
+  return "";}
+
+// Set GPIO for inputs and outputs
+// **************************************************************
+#define LED 2                      // LED = Internal Blue LED for alarm state set (steady) and triggered (flashing)
+const int keyswitch = 23;          // number of pin for key switch
+const int bell = 18;               // number of the pin for alarm
+const int status = 19;             // number of pin for status
+const char* KEYCODE = "forminput"; // reads code from form
+const int remote = 22;             // number of the pin for the wireless remote
+
+// Variables for storing the inputs 
+// **************************************************************
+int keyswitch_on = 5000;     // keyswitch stays on for 5 seconds 
+int bell_state = 1;          // bell is high (12v) when off 
+int last_bell_state = 1;     // previous state of the bell
+int status_state;            // current reading of status (SW+ Latch)
+int last_status_state = LOW; // previous state of the status
+int changestate = 0;         // set HIGH if form has changed set state so that correct button (SET, UNSET) is displayed
+
+// Timing delays
+unsigned long pressedTime  = 0;
+unsigned long releasedTime = 0;
+const int LONG_PRESS_TIME  = 1000; // Check the alarm has been set for 1 second before sending email
+bool isPressing = false;
+bool isLongDetected = false;
+unsigned long interval = 3000;     // Press the remote for at least 3 seconds to set/unset the alarm
+unsigned long lastRemoteMillis;
+
+//Server
+// **************************************************************
+AsyncWebServer server(80);
+
+// Main HTML page
+// **************************************************************
+const char index_html[] PROGMEM = R"rawliteral(
+<!DOCTYPE HTML><html><head>
+    <title>Alarm</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta http-equiv="refresh" content="20">
+    <style>
+      body { font-family: Arial; text-align: center; margin:0px auto; padding-top: 30px;}
+      div { width: 280px; border: 25px solid %COLOURPLACEHOLDER%; padding: 20px; margin: 0 auto}
+    </style>
+  </head><body>
+  <h1><a href="javascript:history.go(0)" style="text-decoration:none">Alarm</a></h1>
+   %ALARMPLACEHOLDER%
+  <div><form action="/get"><input type="text" name="forminput"> <input type="submit" value="%STATUSPLACEHOLDER%"></form></div>
+  <p style="position:absolute; width:100%; display:flex; justify-content:center; bottom:10px; font-size:14px;"><a href="/update">Firmware Update</a></p>
+  </body></html>)rawliteral";
+void notFound(AsyncWebServerRequest *request) {
+  request->send(404, "text/plain", "Not found");
+}
+// Replaces placeholders sections in Main web page
+// **************************************************************
+String processor_main(const String& var){
+ if(var == "STATUSPLACEHOLDER"){ // Current status of the alarm
+//     if(changestate== 1) {
+//     changestate==0;
+//     return String("UPDATING"); }
+//     else if(bell_state== LOW) {
+     if(bell_state== LOW) {
+     return String("RESET"); }  
+     else {
+      if(status_state== HIGH) {
+      return String("UNSET");} 
+      else {
+      return String("SET"); }
+     }}
+      else if(var == "ALARMPLACEHOLDER"){     // Display message if bells are ringing
+      if(bell_state== LOW) {
+      return String("<h1 style=\"color: red\">** ALARM TRIGGERED **</h1>"); }
+      }
+      else if(var == "COLOURPLACEHOLDER"){   // Change background colour of button
+      if(bell_state== LOW) {
+      return String("red"); }
+      else {
+      if(status_state== HIGH) {  
+      return String("navy"); }  
+      else {
+      return String("green");  }
+      }} 
+    
+     return String();
+    }
+
+// Form HTML page
+// **************************************************************
+    const char form_html[] PROGMEM = R"rawliteral(
+   <!DOCTYPE HTML>
+   <html><head><title>Please wait</title><meta name="viewport" content="width=device-width, initial-scale=1">
+   <!-- script language="JavaScript" type="text/javascript">setTimeout("window.history.go(-1)",%REFRESH%);</script> -->
+   <script language="JavaScript" type="text/javascript">
+   var timeleft = %REFRESH%;
+   var downloadTimer = setInterval(function(){
+   if(timeleft <= 0){clearInterval(downloadTimer);}
+   document.getElementById("progressBar").value = %REFRESH%+2 - timeleft;
+   timeleft -= 1;
+   if (timeleft == 0) {window.location.replace("/");}}, 1000);
+   </script></head><body>
+   <style>body { font-family: Arial; text-align: center; margin:0px auto; padding-top: 30px;}</style>
+   <h1>%LASTSTATE%</h1>
+   <progress value="0" max="%REFRESH%" id="progressBar"></progress>
+   <p><a href="javascript:history.back()">Cancel</a></p>
+   </body></html>
+      )rawliteral";   
+
+// Replaces placeholders sections in form return page
+// **************************************************************
+String processor_form(const String& var){
+if(var == "REFRESH"){   // Set 36s refresh interval if setting or 6s if unsetting 
+     if(status_state == LOW) {
+     return String("36"); }
+     else {
+     return String("7"); }
+     }
+else if (var == "LASTSTATE") {
+   if(bell_state== LOW) {
+     return String("Resetting"); }  
+     else {
+      if(status_state== HIGH) {
+      return String("Unsetting"); } 
+      else {
+      return String("Setting"); }
+      }} 
+     return String();    
+}
+// **************************************************************
+
+void setup() {
+  Serial.begin(115200);
+// Configures static IP address and connect to Wifi
+// **************************************************************
+if (WiFi.config(staticIP, gateway, subnet, dns, dns) == false) {
+    Serial.println("Configuration failed.");
+  }
+  WiFi.begin(ssid, password);
+ 
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print("Connecting...\n\n");
+  }
+ 
+  Serial.print("Local IP: ");
+  Serial.println(WiFi.localIP());
+  Serial.print("Subnet Mask: ");
+  Serial.println(WiFi.subnetMask());
+  Serial.print("Gateway IP: ");
+  Serial.println(WiFi.gatewayIP());
+  Serial.print("DNS 1: ");
+  Serial.println(WiFi.dnsIP(0));
+  Serial.print("DNS 2: ");
+  Serial.println(WiFi.dnsIP(1));
+   
+// ************************************************************** 
+
+// Initialize inputs and outputs
+// **************************************************************
+  pinMode(bell, INPUT_PULLUP);     // Initialise Bell input and use resistor to pull HIGH 
+  pinMode(status, INPUT_PULLDOWN); // Initialise status input and use resistor to pull LOW
+  pinMode(LED, OUTPUT);            // Initialize the Blue LED variable as output
+  pinMode(keyswitch, OUTPUT);      // Initialize K/S as output
+  digitalWrite(keyswitch, LOW);    // Set k/s output LOW
+  pinMode(remote, LOW);            // Initialize Wireless remote input
+
+// Send web page to client
+// **************************************************************
+  server.on("/", HTTP_GET, [](AsyncWebServerRequest *request){
+    request->send_P(200, "text/html", index_html, processor_main);}
+  );
+
+// Receive HTTP GET requests for key switch
+// **************************************************************
+  // Receive /on request
+     server.on("/on", HTTP_GET, [] (AsyncWebServerRequest *request) {});
+
+// Send a GET request to <ESP_IP>/get?forminput=<inputMessage>
+// **************************************************************
+     server.on("/get", HTTP_GET, [] (AsyncWebServerRequest *request) {
+     String inputMessage;
+     String inputParam;
+     if (request->hasParam(KEYCODE)) {
+        inputMessage = request->getParam(KEYCODE)->value();
+        inputParam = KEYCODE;
+    }
+      else {
+      inputMessage = "No message sent";
+      inputParam = "none";
+    }
+    Serial.println(inputMessage);
+    if (inputMessage == passcode) {
+      {digitalWrite(keyswitch, HIGH);}
+      request->send_P(200, "text/html" , form_html, processor_form);
+      }
+  });
+  server.onNotFound(notFound);
+
+// **************************************************************  
+
+// Start webserver
+// **************************************************************    
+  AsyncElegantOTA.begin(&server);    // Start ElegantOTA
+  server.begin();
+}
+// **************************************************************
+
+void loop() {
+  AsyncElegantOTA.loop();
+
+// Delay for Key Switch 
+  int remoteVal = digitalRead(remote);
+  if (remoteVal == LOW) {        // assumes remote is LOW when pressed
+    lastRemoteMillis = millis(); // remote not pressed so reset clock
+  }
+  if (millis() - lastRemoteMillis >= interval) {
+digitalWrite(keyswitch, HIGH);   
+  }
+
+// Turn off keyswitch when set by webpage
+// **************************************************************
+static uint32_t ontime= millis();
+if ( (millis()-ontime) > keyswitch_on) {
+ontime = millis();
+digitalWrite(keyswitch,LOW);}
+
+// Read the state of the bell and status
+// **************************************************************  
+  bell_state = digitalRead(bell);
+  status_state = digitalRead(status);
+
+// Turn on Blue Led if alarm set but not triggered or flash if triggered
+// **************************************************************  
+if (bell_state == HIGH && status_state == HIGH) {
+        digitalWrite(LED, HIGH);}
+        else {digitalWrite(LED, LOW);}    
+          
+if (bell_state == LOW && status_state == HIGH) {
+        digitalWrite(LED, millis() % 1000 < 50 ? HIGH : LOW);}     
+
+// Alarm set and triggered 
+// **************************************************************
+if (bell_state == LOW && status_state == HIGH && bell_state != last_bell_state) {
+        Serial.println("Alarm triggered");
+        char *body = "Alarm has been <b>triggered</b><br><p>";
+        char *recipient = GMAIL_SMTP_TO;
+        String result = sendEmail("***ALARM TRIGGERED***", "ESP32", body, recipient, true);
+        last_bell_state = bell_state; } 
+
+// Alarm stopped 
+// **************************************************************
+if (bell_state == HIGH && bell_state != last_bell_state) {
+          Serial.println("Alarm stopped");
+          char *body = "Alarm has <b>stopped</b><br><p>";
+          char *recipient = GMAIL_SMTP_TO;
+          String result = sendEmail("**ALARM STOPPED**", "ESP32", body, recipient, true); 
+          last_bell_state = bell_state;} 
+
+// Alarm unset 
+// ************************************************************** 
+if(status_state == LOW && changestate == 1) { // sw+ latch is 0v and was previously 12v to stop multiple sends
+     changestate = 0; // So email only sent once
+     Serial.println("Alarm UNSET");  
+     char *body = "Alarm has been <b>unset</b><br><p>";
+     char *recipient = GMAIL_SMTP_TO;
+     String result = sendEmail("ALARM UNSET", "ESP32", body, recipient, true);
+     last_status_state = status_state;
+}
+
+// Check for minimum time for set/unset button for alarm set 
+// **************************************************************
+if(last_status_state == LOW && status_state == HIGH) {        // sw+ latch has changed from 0v to 12v to stop multiple sends 
+    pressedTime = millis(); // start of timer to ensure sw+ latch has been on for minimum time
+    isPressing = true;
+    isLongDetected = false;
+    } 
+    else if(last_status_state == HIGH && status_state == LOW) { 
+    isPressing = false;
+    }
+if(isPressing == true && isLongDetected == false) {
+    long pressDuration = millis() - pressedTime;
+
+// Alarm set (checked for long press)
+// *************************************************************
+if( pressDuration > LONG_PRESS_TIME) {
+      Serial.println("Long press - Alarm SET");    
+      isLongDetected = true;
+      changestate = 1; // To record state change to allow unset email to be sent
+      Serial.println("Alarm set");
+      char *body = "<b>Alarm has been <b>set</b><br><p>";
+      char *recipient = GMAIL_SMTP_TO;
+      String result = sendEmail("ALARM SET", "ESP32", body, recipient, true);  
+      
+}}
+  last_status_state = status_state; // save the the last state
+}

@@ -1,5 +1,6 @@
 # Smart Alarm
 This is a project to add additional ‘smart’ functionality into a thirty year old (1993) but fully functioning (and reliable) alarm system.
+![](https://github.com/blaniosh/alarm/blob/main/intro.jpg)
 ## Existing alarm system
 Gardiner Gardtec 800 series alarm, powered by 240v stepped down to 12v DC. With LED and LCD extension display/key pads.
 
@@ -20,6 +21,8 @@ Alarm unset > After countdown period, webpage displays green box and button show
 Alarm set > After countdown period, webpage displays blue box and button shows “UNSET”, Email sent stating Alarm has been set, LED is ON
 
 Alarm triggered > Webpage displays, ** ALARM TRIGGERED **, red box and button shows “RESET”, Email sent stating Alarm has been triggered, LED FLASHES
+![Webpage status](https://github.com/blaniosh/alarm/blob/main/status.jpg)
+
 ## Module
 ESP-32S Development board utilising Wifi, three inputs, two outputs, internal LED, email server and over the air (OTA) firmware update. 
 
@@ -77,3 +80,7 @@ Mounting the interface
 The original wireless remote module - suffers from random triggers
 ![The second remote receiver](https://github.com/blaniosh/alarm/blob/main/IMG_20201013_110852.jpg)
 The second remote receiver, that doesn't appear to suffer random triggers.
+![The ESP-32 mount](https://github.com/blaniosh/alarm/blob/main/IMG_20201022_154156.jpg)
+The ESP-32 mount
+![The ESP-32 mount](https://github.com/blaniosh/alarm/blob/main/IMG_20201022_112512.jpg)
+The ESP-32 mounted

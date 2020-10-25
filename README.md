@@ -11,6 +11,9 @@ Set and Unset of alarm using a remote control or via a keycode entered into a lo
 Live status of system (unset, set or alarm triggered) via the internal LED, a webpage and an email notification.
 
 Remote updateable of firmware using Elegant OTA.
+
+[Read More](https://github.com/blaniosh/alarm/wiki)
+
 ## Operation
 Wireless key remote pressed for 4 or more seconds > Alarm set if previously unset or unset if previously set.
 

@@ -12,5 +12,5 @@ Live status of system (unset, set or alarm triggered) via the internal LED, a we
 
 Remote updateable of firmware using Elegant OTA.
 
-[Read More](https://github.com/blaniosh/alarm/wiki)
+## [Read More...](https://github.com/blaniosh/alarm/wiki)
 
